@@ -59,6 +59,11 @@ add -Werror to the CFLAGS if supported; so if you're not doing development you
 should probably consider passing `--disable-Werror` to `configure` in order to
 prevent build failures due to mere warnings.
 
+##********************
+When you want to support http_proxy when downloading files from https url, pls add macro
+define `JACK_RPROXY_R` in Makefile DEFS virable before make
+********************##
+
 ### Dependencies
 * `gettext` (or `gettext-tiny`)
 * `pkg-config`
