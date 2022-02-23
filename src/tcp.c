@@ -76,6 +76,194 @@ tcp_error(char *hostname, int port, const char *reason)
 	fprintf(stderr, _("Unable to connect to server %s:%i: %s\n"),
 		hostname, port, reason);
 }
+#ifdef JACK_PROXY_R
+/* Get a TCP connection */
+int
+tcp_connect_with_origin_host(tcp_t *tcp, char *hostname, int port, int secure, char *local_if,
+	    unsigned io_timeout, char *origin_host, int origin_port)
+{
+	struct sockaddr_in local_addr;
+	char portstr[10];
+	struct addrinfo ai_hints;
+	struct addrinfo *gai_results, *gai_result;
+	int ret;
+	int sock_fd = -1;
+
+	memset(&local_addr, 0, sizeof(local_addr));
+	if (local_if) {
+		if (!*local_if || tcp->ai_family != AF_INET) {
+			local_if = NULL;
+		} else {
+			local_addr.sin_family = AF_INET;
+			local_addr.sin_port = 0;
+			local_addr.sin_addr.s_addr = inet_addr(local_if);
+		}
+	}
+
+	snprintf(portstr, sizeof(portstr), "%d", port);
+
+	memset(&ai_hints, 0, sizeof(ai_hints));
+	ai_hints.ai_family = tcp->ai_family;
+	ai_hints.ai_socktype = SOCK_STREAM;
+	ai_hints.ai_flags = AI_ADDRCONFIG;
+	ai_hints.ai_protocol = 0;
+
+	ret = getaddrinfo(hostname, portstr, &ai_hints, &gai_results);
+	if (ret != 0) {
+		tcp_error(hostname, port, gai_strerror(ret));
+		return -1;
+	}
+
+	gai_result = gai_results;
+	do {
+		int tcp_fastopen = -1;
+
+		if (sock_fd != -1) {
+			close(sock_fd);
+			sock_fd = -1;
+		}
+		sock_fd = socket(gai_result->ai_family,
+				 gai_result->ai_socktype,
+				 gai_result->ai_protocol);
+		if (sock_fd == -1)
+			continue;
+
+		if (local_if && gai_result->ai_family == AF_INET) {
+			bind(sock_fd, (struct sockaddr *)&local_addr,
+			     sizeof(local_addr));
+			/* FIXME report errors */
+		}
+
+		if (TCP_FASTOPEN_CONNECT) {
+			tcp_fastopen = setsockopt(sock_fd, IPPROTO_TCP,
+						  TCP_FASTOPEN_CONNECT,
+						  NULL, 0);
+		} else if (io_timeout) {
+			/* Set O_NONBLOCK so we can timeout */
+			fcntl(sock_fd, F_SETFL, O_NONBLOCK);
+		}
+		ret = connect(sock_fd, gai_result->ai_addr,
+			      gai_result->ai_addrlen);
+
+		/* Already connected maybe? */
+		if (ret != -1)
+			break;
+
+		if (errno != EINPROGRESS)
+			continue;
+
+		/* With TFO we must assume success */
+		if (tcp_fastopen != -1)
+			break;
+
+		/* Wait for the connection */
+		fd_set fdset;
+		FD_ZERO(&fdset);
+		FD_SET(sock_fd, &fdset);
+		struct timeval tout = { .tv_sec  = io_timeout };
+		ret = select(sock_fd + 1, NULL, &fdset, NULL, &tout);
+		/* Success? */
+		if (ret != -1)
+			break;
+	} while ((gai_result = gai_result->ai_next));
+
+	freeaddrinfo(gai_results);
+
+	if (sock_fd == -1) {
+		tcp_error(hostname, port, strerror(errno));
+		return -1;
+	}
+
+	fcntl(sock_fd, F_SETFL, 0);
+
+    if(strcmp(hostname,origin_host) != 0)
+    {
+        /*
+         * 1. build proxy connect request
+         * 2. send request
+         * 3. receive response
+         * 4. if return http_status equels 200
+         *  4.1 continue
+         *  else:
+         *  return -1
+         */
+
+        char connect_buf[MAX_STRING];
+        memset(connect_buf,0,MAX_STRING);
+        snprintf(connect_buf, MAX_STRING, "CONNECT %s:%d HTTP/1.0\r\nHost: %s:%d\r\nProxy-Connection: keep-alive\r\n\r\n",origin_host,origin_port, origin_host, origin_port);
+
+        int size = -1;
+        size = write(sock_fd, connect_buf,strlen(connect_buf));
+        if (size <0)
+        {
+            return -1;
+        }
+        
+        bool first_enter_n = false;
+        char recv_buf[MAX_STRING];
+        memset(recv_buf,0,MAX_STRING);
+        char tmp_buf[MAX_STRING];
+        memset(tmp_buf,0,MAX_STRING);
+        do {
+            size = read(sock_fd,tmp_buf,1);
+            if(size<=0) {
+                return -1;
+            }
+
+            strncat(recv_buf,tmp_buf,1);
+            if(tmp_buf[0] == '\n' && first_enter_n == true){
+                break;
+
+            }
+            if (tmp_buf[0] =='\r' && first_enter_n == true){
+                continue;
+            }
+            if(tmp_buf[0] == '\n' && first_enter_n == false){
+                first_enter_n = true;
+                continue;
+            }
+            if(first_enter_n == true){
+                first_enter_n = false;
+            }
+
+
+        }while(1);
+
+        if(strlen(recv_buf) <=12) {
+            return -1;
+        }// HTTP/1.1 200
+
+        char status[4];
+        memset(status, 0 , 4);
+        strncpy(status,recv_buf+9,3);
+        if(strncmp(status,"200",3) != 0)
+        {
+            return -1;
+
+        }
+
+    }
+
+#ifdef HAVE_SSL
+	if (secure) {
+		//tcp->ssl = ssl_connect(sock_fd, hostname);
+		tcp->ssl = ssl_connect(sock_fd, origin_host);
+		if (tcp->ssl == NULL) {
+			close(sock_fd);
+			return -1;
+		}
+	}
+#endif				/* HAVE_SSL */
+	tcp->fd = sock_fd;
+
+	/* Set I/O timeout */
+	struct timeval tout = { .tv_sec  = io_timeout };
+	setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tout, sizeof(tout));
+	setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tout, sizeof(tout));
+
+	return 1;
+}
+#endif
 
 /* Get a TCP connection */
 int

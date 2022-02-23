@@ -125,11 +125,23 @@ http_connect(http_t *conn, int proto, char *proxy, char *host, int port,
 		ppass = tconn->pass;
 		conn->proxy = 1;
 	}
+#ifdef JACK_PROXY_R
+    char origin_host[MAX_STRING];
+    strlcpy(origin_host, conn->host, sizeof(conn->host));
+    int origin_port = conn->port;
+	if (tcp_connect_with_origin_host(&conn->tcp, host, port, PROTO_IS_SECURE(conn->proto),
+                conn->local_if, io_timeout,origin_host,origin_port) == -1){
+
+		return 0;
+    }
+    
+#else
 
 	if (tcp_connect(&conn->tcp, host, port, PROTO_IS_SECURE(proto),
 			conn->local_if, io_timeout) == -1)
 		return 0;
 
+#endif
 	if (*user == 0) {
 		*conn->auth = 0;
 	} else {
@@ -163,7 +175,9 @@ http_get(http_t *conn, char *lurl)
 	}
 
 	*conn->request->p = 0;
+    
 	if (conn->proxy) {
+
 		const char *proto = scheme_from_proto(conn->proto);
 		if (is_default_port(conn->proto, conn->port)) {
 			http_addheader(conn, "GET %s%s%s%s%s HTTP/1.0", proto,
@@ -215,6 +229,7 @@ http_addheader(http_t *conn, const char *format, ...)
 	}
 }
 
+
 int
 http_exec(http_t *conn)
 {
@@ -224,6 +239,7 @@ http_exec(http_t *conn)
 	fprintf(stderr, "--- Sending request ---\n%s--- End of request ---\n",
 		conn->request->p);
 #endif
+
 
 	strlcat(conn->request->p, "\r\n", conn->request->len);
 

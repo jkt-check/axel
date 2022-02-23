@@ -56,6 +56,11 @@ typedef struct {
 } tcp_t;
 
 int is_ipv6_addr(const char *hostname);
+
+#ifdef JACK_PROXY_R
+int tcp_connect_with_origin_host(tcp_t *tcp, char *hostname, int port, int secure, char *local_if,
+	    unsigned io_timeout, char *origin_host, int origin_port);
+#endif
 int tcp_connect(tcp_t *tcp, char *hostname, int port, int secure,
 		char *local_if, unsigned io_timeout);
 void tcp_close(tcp_t *tcp);
